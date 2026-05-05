@@ -1,0 +1,10 @@
+{
+  "labels": [
+    "exam",
+    "learning"
+  ],
+  "descriptions": {
+    "exam": "Student wants a short exam-style answer",
+    "learning": "Student wants a detailed explanation"
+  }
+}
