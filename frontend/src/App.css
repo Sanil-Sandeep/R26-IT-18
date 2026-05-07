@@ -18,6 +18,107 @@ body {
   color: #2d3748;
 }
 
+/* =====================================================
+   LOGIN SCREEN
+   ===================================================== */
+.login-screen {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.login-box {
+  background: white;
+  border-radius: 24px;
+  padding: 40px;
+  width: 100%;
+  max-width: 440px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+}
+
+.login-emoji {
+  font-size: 64px;
+  margin-bottom: 16px;
+}
+
+.login-box h1 {
+  font-size: 22px;
+  color: #2d3748;
+  margin-bottom: 6px;
+}
+
+.login-box > p {
+  color: #718096;
+  font-size: 14px;
+  margin-bottom: 28px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+}
+
+.login-form label {
+  font-size: 14px;
+  color: #4a5568;
+  font-weight: 500;
+}
+
+.login-input {
+  width: 100%;
+  padding: 14px 18px;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  font-size: 15px;
+  font-family: 'Poppins', sans-serif;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.login-input:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102,126,234,0.1);
+}
+
+.login-error {
+  color: #e53e3e;
+  font-size: 13px;
+  margin: 0;
+}
+
+.login-btn {
+  width: 100%;
+  padding: 14px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  font-size: 16px;
+  font-family: 'Poppins', sans-serif;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-top: 4px;
+}
+
+.login-btn:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(102,126,234,0.4);
+}
+
+.login-note {
+  margin-top: 20px;
+  font-size: 12px;
+  color: #a0aec0;
+}
+
 /* ---- App Layout ---- */
 .app {
   display: flex;
