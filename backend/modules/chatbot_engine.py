@@ -100,10 +100,10 @@ class ChatbotEngine:
             print(f"  Error loading intent classifier: {e}")
             return False
 
-    
+    # ===============================================================
     # MAIN CHAT FUNCTION
     # This is called for every student message
-   
+    # ===============================================================
 
     def chat(self, message, student_id="student_1", emotion_state=None):
         """
@@ -144,10 +144,16 @@ class ChatbotEngine:
 
         # ---- Step 6: Adapt response based on emotion ----
         if search_result['found']:
+            difficulty = self.quiz_manager.get_difficulty_level(
+                student_id, search_result.get('topic', '')
+            )
             adapted_answer = adapt_response(
                 search_result['answer'],
                 emotion_state,
-                intent
+                intent,
+                difficulty=difficulty,
+                student_id=student_id,
+                question=message
             )
         else:
             adapted_answer = search_result['answer']
@@ -303,27 +309,56 @@ class ChatbotEngine:
     def _detect_intent(self, message):
         """
         Detects whether the message is exam mode or learning mode.
-        Uses trained classifier if available, otherwise uses rules.
-        """
-        if self.intent_classifier:
-            try:
-                prediction = self.intent_classifier.predict([message])[0]
-                return prediction  # "exam" or "learning"
-            except:
-                pass
 
-        # Rule-based fallback
-        message_lower = message.lower()
-        exam_keywords = [
-            'define', 'state', 'list', 'mention', 'marks', 'exam',
-            'briefly', 'short', 'what does', 'stand for', 'full form',
-            'name two', 'name three', 'write short', 'give definition'
+        STRICT RULE:
+        Only classify as EXAM if the message contains CLEAR exam keywords.
+        Simple questions like "What is data?" are LEARNING by default.
+        """
+        message_lower = message.lower().strip()
+
+        # These are STRONG exam signals - must be present to trigger exam mode
+        strong_exam_keywords = [
+            'define ',        # "define database"
+            'state ',         # "state the function"
+            ' marks',         # "2 marks", "4 marks"
+            ' mark',          # "2 mark question"
+            'for exam',       # "for exam"
+            'exam question',  # "exam question"
+            'exam answer',    # "exam answer"
+            'briefly explain',
+            'short note',
+            'write short',
+            'give definition',
+            'full form of',
+            'stand for',
+            'name two ',
+            'name three ',
+            'name four ',
+            'list two ',
+            'list three ',
+            'list four ',
+            'mention two ',
+            'mention three ',
+            'state two ',
+            'state three ',
         ]
 
-        for keyword in exam_keywords:
+        # Check strong exam keywords first
+        for keyword in strong_exam_keywords:
             if keyword in message_lower:
                 return "exam"
 
+        # Message starts with "define" (without space after)
+        if message_lower.startswith('define '):
+            return "exam"
+
+        # Has a number + marks pattern like "(2 marks)" or "2marks"
+        import re
+        if re.search(r'\d+\s*marks?', message_lower):
+            return "exam"
+
+        # Everything else is LEARNING mode
+        # "What is X?", "How does X work?", "Explain X" etc
         return "learning"
 
     def _check_concept_reentry(self, student_id, message):
