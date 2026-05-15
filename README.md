@@ -1,7 +1,7 @@
 <div align="center">
 
-<h1>Adaptive Emotion-Aware E-Learning Platform</h1>
-<h3>for Deaf O/L ICT Students</h3>
+<h1>Adaptive Emotion-Aware E-Learning Platform for Deaf O/L ICT Students</h1>
+
 
 <br/>
 
