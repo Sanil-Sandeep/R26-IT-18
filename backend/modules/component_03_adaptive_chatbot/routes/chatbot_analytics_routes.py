@@ -65,4 +65,19 @@ async def get_topic_analytics(topic_id: str):
     return await chatbot_service.get_topic_analytics(topic_id)
 
 
+@analytics_router.get("/api/analytics/teacher-dashboard")
+async def get_teacher_dashboard():
+    """Return the aggregated teacher analytics dashboard payload."""
+    return await chatbot_service.get_teacher_dashboard()
 
+
+@analytics_router.get("/api/analytics/download-report")
+async def download_analytics_report(
+    format: str = "pdf",
+    studentId: str | None = None,
+    topicId: str | None = None,
+):
+    """Download an analytics report in CSV or PDF format."""
+    report = await chatbot_service.get_report_file(format, studentId, topicId)
+    headers = {"Content-Disposition": f"attachment; filename={report['filename']}"}
+    return Response(content=report["content"], media_type=report["mediaType"], headers=headers)
