@@ -681,7 +681,416 @@ async def check_concept_reentry(payload: dict[str, Any], persist_log: bool = Fal
     return response
 
 
+async def check_repeated_query(payload: dict[str, Any], persist_alert: bool = False) -> dict[str, Any]:
+    db = get_db()
+    topic_name = payload.get("currentTopic") or "General O/L ICT"
+    question = payload["question"]
+    question_fingerprint = _question_fingerprint(question)
+    recent_messages = [
+        doc
+        async for doc in db[CHATBOT_MESSAGES_COLLECTION]
+        .find({"studentId": payload["studentId"], "topic": topic_name})
+        .sort("createdAt", -1)
+        .limit(8)
+    ]
 
+    repeated_examples = []
+    repeated_count = 1
+    for doc in recent_messages:
+        similarity = _question_similarity(question, doc.get("question", ""))
+        previous_fingerprint = _question_fingerprint(doc.get("question", ""))
+        if similarity >= 0.5 or (question_fingerprint and question_fingerprint == previous_fingerprint):
+            repeated_count += 1
+            repeated_examples.append(doc.get("question", ""))
+
+    repeated_query_status = (
+        "alert"
+        if repeated_count >= 3
+        else "watch"
+        if repeated_count == 2
+        else "normal"
+    )
+
+    alert_created = False
+    if persist_alert and repeated_count >= 3:
+        student_name = await _lookup_student_name(payload["studentId"])
+        await db[REPEATED_QUERY_ALERTS_COLLECTION].update_one(
+            {"studentId": payload["studentId"], "topic": topic_name, "status": "active"},
+            {
+                "$set": {
+                    "studentId": payload["studentId"],
+                    "studentName": student_name,
+                    "topic": topic_name,
+                    "updatedAt": _utc_now(),
+                },
+                "$setOnInsert": {"createdAt": _utc_now(), "status": "active"},
+                "$inc": {"repeatedQuestionCount": 1},
+                "$addToSet": {"exampleQuestions": {"$each": [question, *repeated_examples[:2]]}},
+            },
+            upsert=True,
+        )
+        alert_created = True
+
+    return {
+        "repeatedQueryStatus": repeated_query_status,
+        "repeatedQueryCount": repeated_count,
+        "alertCreated": alert_created,
+        "topic": topic_name,
+        "exampleQuestions": [question, *repeated_examples[:2]],
+    }
+
+
+
+
+    average_score = round(sum(doc["understandingScore"] for doc in docs) / len(docs), 2)
+    return {
+        "topicId": topic_id,
+        "topicName": docs[0]["topicName"],
+        "averageScore": average_score,
+        "students": [_serialize_understanding_score(doc) for doc in docs],
+    }
+
+
+async def get_teacher_dashboard() -> dict[str, Any]:
+    db = get_db()
+    score_docs = [doc async for doc in db[STUDENT_UNDERSTANDING_SCORES_COLLECTION].find()]
+    alert_docs = await get_repeated_query_alerts()
+    quiz_docs = [
+        doc
+        async for doc in db[LOGIN_QUIZ_ATTEMPTS_COLLECTION]
+        .find({"status": "submitted"})
+        .sort("submittedAt", -1)
+    ]
+    challenge_docs = [doc async for doc in db[MICRO_CHALLENGE_ATTEMPTS_COLLECTION].find()]
+    state_docs = [doc async for doc in db[CHATBOT_MESSAGES_COLLECTION].find().sort("createdAt", -1).limit(200)]
+
+    topic_scores: dict[str, list[float]] = {}
+    student_scores: dict[str, list[float]] = {}
+    for doc in score_docs:
+        topic_scores.setdefault(doc["topicName"], []).append(doc["understandingScore"])
+        student_scores.setdefault(doc["studentId"], []).append(doc["understandingScore"])
+
+    topic_bar = [
+        {
+            "topic": topic,
+            "score": round(sum(scores) / len(scores), 2),
+        }
+        for topic, scores in sorted(topic_scores.items())
+    ]
+    student_table = []
+    for student_id, scores in student_scores.items():
+        avg = round(sum(scores) / len(scores), 2)
+        student_table.append(
+            {
+                "studentId": student_id,
+                "studentName": await _lookup_student_name(student_id),
+                "understandingScore": avg,
+                "weakTopics": [doc["topicName"] for doc in score_docs if doc["studentId"] == student_id and doc["understandingScore"] < 60][:3],
+            }
+        )
+
+    learning_state_map: dict[str, int] = {}
+    for doc in state_docs:
+        label = STATE_LABELS.get(doc.get("learningState", "understanding"), "Understanding")
+        learning_state_map[label] = learning_state_map.get(label, 0) + 1
+
+    progress_series = [
+        {
+            "date": (_utc_now() - timedelta(days=offset)).strftime("%Y-%m-%d"),
+            "score": round(
+                sum(doc["score"] for doc in quiz_docs if doc.get("submittedAt") and _as_utc_naive(doc["submittedAt"]).date() == (_utc_now() - timedelta(days=offset)).date())
+                / max(1, len([doc for doc in quiz_docs if doc.get("submittedAt") and _as_utc_naive(doc["submittedAt"]).date() == (_utc_now() - timedelta(days=offset)).date()])),
+                2,
+            )
+            if quiz_docs
+            else 0,
+        }
+        for offset in range(6, -1, -1)
+    ]
+
+    weak_topics = [item for item in topic_bar if item["score"] < 60]
+    micro_accuracy = round(
+        (sum(1 for doc in challenge_docs if doc.get("isCorrect")) / len(challenge_docs)) * 100,
+        2,
+    ) if challenge_docs else 0
+
+    return {
+        "topicBarChart": topic_bar,
+        "progressLineChart": progress_series,
+        "learningStatePieChart": [
+            {"label": label, "value": value} for label, value in learning_state_map.items()
+        ],
+        "weakStudents": sorted(student_table, key=lambda item: item["understandingScore"])[:8],
+        "repeatedQueryAlerts": alert_docs[:10],
+        "microChallengePerformance": {
+            "attempts": len(challenge_docs),
+            "accuracy": micro_accuracy,
+        },
+        "loginQuizResults": [
+            {
+                "quizId": doc["quizId"],
+                "studentId": doc["studentId"],
+                "studentName": await _lookup_student_name(doc["studentId"]),
+                "score": doc.get("score", 0),
+                "submittedAt": doc.get("submittedAt"),
+            }
+            for doc in quiz_docs[:8]
+        ],
+        "weakTopics": weak_topics[:8],
+        "recommendedRevisionTopics": [item["topic"] for item in weak_topics[:6]],
+    }
+
+
+async def get_report_file(format_name: str, student_id: str | None = None, topic_id: str | None = None) -> dict[str, Any]:
+    format_name = format_name.lower()
+    analytics_payload = (
+        await get_student_analytics(student_id) if student_id
+        else await get_topic_analytics(topic_id) if topic_id
+        else await get_teacher_dashboard()
+    )
+    created_at = _utc_now()
+
+    if format_name == "csv":
+        stream = io.StringIO()
+        writer = csv.writer(stream)
+        writer.writerow(["Generated At", created_at.isoformat()])
+        if student_id:
+            writer.writerow(["Student", analytics_payload["studentName"]])
+            writer.writerow(["Topic", "Understanding %", "Weak Areas", "Revision"])
+            for item in analytics_payload.get("understandingScores", []):
+                writer.writerow(
+                    [
+                        item["topicName"],
+                        item["understandingScore"],
+                        ", ".join(item.get("weakAreas", [])),
+                        item["recommendation"],
+                    ]
+                )
+        elif topic_id:
+            writer.writerow(["Topic", analytics_payload["topicName"]])
+            writer.writerow(["Student", "Understanding %", "Recommendation"])
+            for item in analytics_payload.get("students", []):
+                writer.writerow(
+                    [item["studentName"], item["understandingScore"], item["recommendation"]]
+                )
+        else:
+            writer.writerow(["Topic", "Score"])
+            for item in analytics_payload.get("topicBarChart", []):
+                writer.writerow([item["topic"], item["score"]])
+        content = stream.getvalue().encode("utf-8")
+        filename = f"analytics-report-{created_at.strftime('%Y%m%d%H%M%S')}.csv"
+        media_type = "text/csv"
+    else:
+        lines = [
+            "SignLearn AI Analytics Report",
+            f"Generated at: {created_at.isoformat()}",
+        ]
+        if student_id:
+            lines.append(f"Student: {analytics_payload['studentName']}")
+            for item in analytics_payload.get("understandingScores", []):
+                lines.append(
+                    f"{item['topicName']}: {item['understandingScore']}% - {item['recommendation']}"
+                )
+        elif topic_id:
+            lines.append(f"Topic: {analytics_payload['topicName']}")
+            for item in analytics_payload.get("students", [])[:12]:
+                lines.append(
+                    f"{item['studentName']}: {item['understandingScore']}%"
+                )
+        else:
+            lines.append("Teacher Dashboard Snapshot")
+            for item in analytics_payload.get("topicBarChart", [])[:12]:
+                lines.append(f"{item['topic']}: {item['score']}%")
+        content = _generate_simple_pdf(lines)
+        filename = f"analytics-report-{created_at.strftime('%Y%m%d%H%M%S')}.pdf"
+        media_type = "application/pdf"
+
+    await get_db()[TEACHER_ANALYTICS_REPORTS_COLLECTION].insert_one(
+        {
+            "format": format_name,
+            "studentId": student_id,
+            "topicId": topic_id,
+            "filename": filename,
+            "createdAt": created_at,
+        }
+    )
+
+    return {"content": content, "filename": filename, "mediaType": media_type}
+
+
+async def _generate_answer_bundle(
+    question: str,
+    mode: str,
+    intent: str,
+    learning_state: str,
+    topic_doc: dict[str, Any] | None,
+    prerequisites: list[str],
+    difficulty_level: int,
+    refresh_points: list[str],
+    prompt: str,
+    repeated_query_count: int = 1,
+) -> dict[str, Any]:
+    fallback_reason = None
+
+    try:
+        llm_result = await callLLMApi(
+            question=question,
+            mode=mode,
+            intent=intent,
+            learningState=learning_state,
+            topic_doc=topic_doc,
+            prerequisites=prerequisites,
+            refresh_points=refresh_points,
+            prompt=prompt,
+        )
+        answer = _normalize_whitespace(llm_result["answer"])
+        if mode == "exam":
+            answer = formatExamAnswer(answer, _build_key_terms(topic_doc))
+        else:
+            answer = formatLearningAnswer(
+                answer=answer,
+                learning_state=learning_state,
+                example=_select_topic_example(topic_doc),
+                prerequisites=prerequisites,
+                refresh_points=refresh_points,
+                allow_prefix=False,
+            )
+        return {
+            "answer": answer,
+            "sourceType": "LLM",
+            "fallbackReason": None,
+            "confidence": _estimate_answer_confidence(
+                source_type="LLM",
+                topic_doc=topic_doc,
+                repeated_query_count=repeated_query_count,
+                learning_state=learning_state,
+                fallback_reason=None,
+            ),
+        }
+    except LLMApiError as exc:
+        fallback_reason = exc.safe_reason
+        _log_local_fallback(fallback_reason, mode, topic_doc)
+
+    return {
+        "answer": generateLocalFallbackAnswer(
+            question=question,
+            mode=mode,
+            learning_state=learning_state,
+            topic_doc=topic_doc,
+            prerequisites=prerequisites,
+            difficulty_level=difficulty_level,
+            refresh_points=refresh_points,
+        ),
+        "sourceType": "LOCAL_DATASET",
+        "fallbackReason": fallback_reason,
+        "confidence": _estimate_answer_confidence(
+            source_type="LOCAL_DATASET",
+            topic_doc=topic_doc,
+            repeated_query_count=repeated_query_count,
+            learning_state=learning_state,
+            fallback_reason=fallback_reason,
+        ),
+    }
+
+
+def detectIntent(question: str) -> str:
+    lowered = question.lower()
+    learning_score = sum(1 for keyword in LEARNING_KEYWORDS if keyword in lowered)
+    exam_score = sum(1 for keyword in EXAM_KEYWORDS if keyword in lowered)
+    return "exam" if exam_score >= max(1, learning_score) else "learning"
+
+
+def detect_intent(question: str) -> str:
+    return detectIntent(question)
+
+
+async def detectTopic(question: str, currentTopic: str | None = None) -> dict[str, Any] | None:
+    return await _resolve_topic_context(currentTopic, question)
+
+
+def getPrerequisites(requested: list[str], topic_doc: dict[str, Any] | None) -> list[str]:
+    return _merge_prerequisites(
+        requested,
+        topic_doc.get("prerequisiteLabels", topic_doc.get("prerequisites", [])) if topic_doc else [],
+    )
+
+
+async def callLLMApi(
+    *,
+    question: str,
+    mode: str,
+    intent: str,
+    learningState: str,
+    topic_doc: dict[str, Any] | None,
+    prerequisites: list[str],
+    refresh_points: list[str],
+    prompt: str,
+) -> dict[str, Any]:
+    provider = str(settings.LLM_PROVIDER or "").strip().lower()
+    api_key = str(settings.LLM_API_KEY or "").strip()
+    model = str(settings.LLM_MODEL or "").strip()
+    timeout_ms = max(1000, int(settings.LLM_TIMEOUT_MS or 10000))
+
+    if not provider:
+        raise LLMApiError("llm_provider_missing")
+    if provider != "ollama" and not api_key:
+        raise LLMApiError("api_key_missing")
+    if not model:
+        raise LLMApiError("llm_model_missing")
+
+    candidate_models = [model]
+    if provider == "gemini":
+        for fallback_m in ["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-flash-latest"]:
+            if fallback_m not in candidate_models:
+                candidate_models.append(fallback_m)
+
+    last_error = None
+    for cur_model in candidate_models:
+        url, headers, body = _build_llm_request(
+            provider=provider,
+            api_key=api_key,
+            model=cur_model,
+            prompt=prompt,
+            question=question,
+            mode=mode,
+            intent=intent,
+            learning_state=learningState,
+            topic_doc=topic_doc,
+            prerequisites=prerequisites,
+            refresh_points=refresh_points,
+        )
+
+        for attempt in range(2):
+            try:
+                payload = await asyncio.to_thread(
+                    _post_json_request,
+                    url,
+                    headers,
+                    body,
+                    timeout_ms,
+                )
+                answer = _extract_llm_answer(provider, payload)
+                if not answer.strip():
+                    raise LLMApiError("invalid_llm_response")
+                return {
+                    "answer": answer,
+                    "provider": provider,
+                    "model": cur_model,
+                }
+            except LLMApiError as exc:
+                last_error = exc
+                if exc.safe_reason in ("quota_exceeded", "provider_server_error"):
+                    break
+                if attempt == 0 and exc.safe_reason in LLM_RETRYABLE_REASONS:
+                    continue
+                break
+            except Exception as exc:
+                last_error = LLMApiError("invalid_llm_response")
+                if attempt == 0:
+                    continue
+                break
+
+    raise last_error or LLMApiError("invalid_llm_response")
 
 
 def generateLocalFallbackAnswer(
