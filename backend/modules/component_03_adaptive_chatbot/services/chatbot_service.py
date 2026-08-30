@@ -740,7 +740,72 @@ async def check_repeated_query(payload: dict[str, Any], persist_alert: bool = Fa
     }
 
 
+async def get_repeated_query_alerts() -> list[dict[str, Any]]:
+    db = get_db()
+    alerts = []
+    cursor = db[REPEATED_QUERY_ALERTS_COLLECTION].find().sort("updatedAt", -1)
+    async for doc in cursor:
+        alerts.append(
+            {
+                "id": str(doc["_id"]),
+                "studentId": doc["studentId"],
+                "studentName": doc.get("studentName", "Student"),
+                "topic": doc["topic"],
+                "repeatedQuestionCount": doc.get("repeatedQuestionCount", 0),
+                "exampleQuestions": doc.get("exampleQuestions", [])[:4],
+                "createdAt": doc.get("createdAt") or doc.get("updatedAt"),
+                "status": doc.get("status", "active"),
+            }
+        )
+    return alerts
 
+
+async def get_student_analytics(student_id: str) -> dict[str, Any]:
+    db = get_db()
+    score_docs = [
+        doc
+        async for doc in db[STUDENT_UNDERSTANDING_SCORES_COLLECTION]
+        .find({"studentId": student_id})
+        .sort("updatedAt", -1)
+    ]
+    if not score_docs:
+        return {
+            "studentId": student_id,
+            "studentName": await _lookup_student_name(student_id),
+            "understandingScores": [],
+            "averageScore": 0,
+            "weakTopics": [],
+            "recommendedRevisionTopics": [],
+        }
+
+    average_score = round(sum(doc["understandingScore"] for doc in score_docs) / len(score_docs), 2)
+    weak_topics = [doc["topicName"] for doc in score_docs if doc["understandingScore"] < 60]
+    return {
+        "studentId": student_id,
+        "studentName": await _lookup_student_name(student_id),
+        "understandingScores": [_serialize_understanding_score(doc) for doc in score_docs],
+        "averageScore": average_score,
+        "weakTopics": weak_topics,
+        "recommendedRevisionTopics": weak_topics[:5],
+    }
+
+
+async def get_topic_analytics(topic_id: str) -> dict[str, Any]:
+    db = get_db()
+    docs = [
+        doc
+        async for doc in db[STUDENT_UNDERSTANDING_SCORES_COLLECTION]
+        .find({"topicId": topic_id})
+        .sort("updatedAt", -1)
+    ]
+    if not docs:
+        summary = await db[LESSON_SUMMARIES_COLLECTION].find_one({"topicId": topic_id})
+        return {
+            "topicId": topic_id,
+            "topicName": summary["topicName"] if summary else topic_id,
+            "averageScore": 0,
+            "students": [],
+        }
 
     average_score = round(sum(doc["understandingScore"] for doc in docs) / len(docs), 2)
     return {
